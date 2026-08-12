@@ -44,3 +44,16 @@ Used by `/wayfinder`. The **map** is a single issue with **child** issues as tic
 - **Frontier query**: `glab issue list -F json` scoped to the map's children, drop any with an open blocker — a native `blocked_by` link to an open issue (`glab api projects/:id/issues/:iid/links`), or an open issue in the `Blocked by` line — or an assignee; first in map order wins.
 - **Claim**: `glab issue update <n> --assignee @me` — the session's first write.
 - **Resolve**: `glab issue note <n> --message "<answer>"`, then `glab issue close <n>`, then append a context pointer (gist + link) to the map's Decisions-so-far.
+
+## Frontier operations
+
+Used by `/frontier`, which orders and batches the whole open set rather than a single map's children.
+
+- **List with edges**: `glab issue list -F json --all`, then `glab api projects/:id/issues/:iid/links` per open issue for its blocking links. Run the per-issue calls concurrently.
+- **Touch set**: an `area::<slug>` scoped label. GitLab scoped labels are mutually exclusive within a scope, so an issue carries exactly one — which suits a touch set well. Create through the project's label settings or `glab api`, apply with `glab issue update <n> --label "area::<slug>"`.
+- **Blocking edge**: the native blocking link described under Wayfinding operations — `glab issue note <blocked> --message "/blocked_by #<blocker>"`. Premium/Ultimate only; on the free tier fall back to a `Blocked by: #<n>, #<n>` line at the top of the description and parse it.
+- **Frontier query**: open issues with no open `blocked_by` link, batched per `docs/agents/work-order.md`. A batch is blocked if _any_ member is.
+- **Priority**: whatever label scheme the project already uses (`priority::high`, `P1`, …). Do not invent one; if there is none, sort by issue number and say so.
+- **Batches**: GitLab has no representation for "these three are one merge request". They live only in `docs/agents/work-order.md`. Do not create epics for them.
+
+Note that scoped labels make `area::*` single-valued. An issue that genuinely spans two subsystems is usually a sign it should be split — but if it must stay whole, record the extra areas in the work order's rationale rather than fighting the label model.

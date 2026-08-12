@@ -28,3 +28,16 @@ Used by `/wayfinder`. The **map** is a file with one **child** file per ticket.
 - **Frontier**: scan `.scratch/<effort>/issues/` for files that are open, unblocked, and unclaimed; first by number wins.
 - **Claim**: set `Status: claimed` and save before any work.
 - **Resolve**: append the answer under an `## Answer` heading, set `Status: resolved`, then append a context pointer (gist + link) to the map's Decisions-so-far in `map.md`.
+
+## Frontier operations
+
+Used by `/frontier`, which orders and batches the whole open set rather than a single map's children.
+
+- **List with edges**: read every `.scratch/*/issues/*.md`, taking `Status:`, `Area:` and `Blocked by:` from the header lines.
+- **Touch set**: an `Area: <slug>, <slug>` line near the top, alongside `Status:`. Local files have no label system, so this is the equivalent — same vocabulary, one entry per meaningful subsystem.
+- **Blocking edge**: the existing `Blocked by: NN, NN` line. A ticket is unblocked when every file it lists is `resolved`.
+- **Frontier query**: files that are open, unblocked, and unclaimed, batched per `docs/agents/work-order.md`. A batch is blocked if _any_ member is.
+- **Priority**: a `Priority: P1` line if the repo uses one; otherwise file order, and say so.
+- **Batches**: recorded only in `docs/agents/work-order.md`. Do not encode them in filenames — a file's `NN` prefix is its dependency order and means something else.
+
+Because a local tracker has no numeric database ids, `/frontier` references issues by their `NN` prefix throughout.

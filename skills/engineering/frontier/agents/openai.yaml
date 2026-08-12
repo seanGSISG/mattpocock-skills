@@ -1,0 +1,5 @@
+interface:
+  display_name: "Frontier"
+  short_description: "Order, batch and watch the work"
+policy:
+  allow_implicit_invocation: false

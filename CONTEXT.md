@@ -18,11 +18,23 @@ A `wayfinder` unit — a child **Issue** of a `wayfinder:map` holding a *questio
 **Triage role**:
 A canonical state-machine label applied to an **Issue** during triage (e.g. `needs-triage`, `ready-for-afk`). Each role maps to a real label string in the **Issue tracker** via `docs/agents/triage-labels.md`.
 
+**Batch**:
+A `frontier` unit — a set of **Issues** that should land as a single pull request, because they share a **Touch set**. A batch is one node in the blocking graph: takeable only when every member is unblocked, done only when every member is closed. It declares a **Gate**. Batch membership lives in `docs/agents/work-order.md`, not in the **Issue tracker**, which has no field for it.
+_Avoid_: wave, phase, group, cluster
+
+**Touch set**:
+The files or subsystems an **Issue** implicates, recorded on the **Issue tracker** as an `area:*` label so that batching is a query rather than a re-read.
+
+**Gate**:
+The narrowest command that verifies a **Batch** — narrowest _sufficient_, not the project's blessed full-suite command. A non-deterministic command is not a gate at any width.
+
 ## Relationships
 
 - An **Issue tracker** holds many **Issues**
 - An **Issue** carries one **Triage role** at a time
 - A **Decision ticket** is an **Issue** (a child of a `wayfinder:map`)
+- A **Batch** holds many **Issues**; an **Issue** belongs to at most one **Batch**
+- A **Batch** declares one **Gate**
 
 ## Flagged ambiguities
 

@@ -25,9 +25,13 @@ The route most work travels. You have an idea and want it built.
 
    Either way, **`/implement`** builds each issue by driving **`/tdd`** internally — one red-green slice at a time — then closes out by running **`/code-review`**, a two-axis review (Standards + Spec) of the diff, before committing. Reach for **`/tdd`** on its own when you just want to build a concrete behaviour test-first without a full spec, and **`/code-review`** on its own whenever you want to review a branch or PR against a fixed point.
 
+4. **Branch — is it obvious which ticket to pick up next?** With a handful of tickets in a clean chain, yes: work the frontier top to bottom. Once the tracker holds enough that the answer stops being obvious — tickets arriving from several directions, blockers stated only in prose, several small ones that clearly belong in one PR — reach for **`/frontier`** before the first `/implement`. It derives each issue's **touch set**, wires the blocking edges the tracker is missing, groups the issues that should land as a single pull request into **batches** with a **gate** command each, and serves a live local board of the result. Then `/implement` one batch per fresh context window.
+
+   `/frontier` is the skill to reach for when the question is literally *"what should I do next, and in what order?"* — and it's worth re-running whenever the tracker moves, since its whole job is to be cheap and repeatable. It is not a planning session: it reads what is already on the tracker and records an order. If the tickets themselves are wrong, that's `/to-tickets` or `/triage`.
+
 ### Context hygiene
 
-Keep steps 1–3 in **one unbroken context window** — don't compact or clear until after `/to-tickets` — so the grilling, spec, and tickets all build on the same thinking. Each `/implement` then starts fresh, working from the ticket.
+Keep steps 1–3 in **one unbroken context window** — don't compact or clear until after `/to-tickets` — so the grilling, spec, and tickets all build on the same thinking. Step 4 and each `/implement` then start fresh: `/frontier` reads the tracker rather than the conversation, and each ticket is self-contained.
 
 The limit on this is the **[smart zone](https://www.aihero.dev/ai-coding-dictionary/smart-zone)**: the window (~150k tokens on state-of-the-art models) within which the model still reasons sharply. If a session approaches it before `/to-tickets`, don't push on degraded — `/compact` at the nearest phase boundary and carry on (see Phase boundaries).
 
