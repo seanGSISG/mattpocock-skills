@@ -38,7 +38,7 @@ copy it here.
 | `Why` | no | Rationale. |
 
 - The batch **id** is the text before the ` — ` in the heading; the **title** is the rest. Ids should be short slugs (`graph`, `bot`, `ci`) — they appear on the board and in commit messages.
-- Field labels are case-insensitive, and the `**` bolding is optional.
+- Field labels are case-insensitive, and the `**` bolding is optional. `Issue` is the same field as `Issues`.
 - A field wraps onto following lines until the next bullet or heading. Any other bullet (`- **PR:** …`, a note) ends the field above it and is ignored, wrapped lines included. A wrapped line may start with `#<number>`.
 - Issue references are `#<number>` anywhere in the field, wrapped lines included. Every one in `Issues` becomes a member, so mention other Issues in `Why`.
 - An Issue may belong to **at most one batch**. Listing it twice is a conflict; the board keeps the first and warns.

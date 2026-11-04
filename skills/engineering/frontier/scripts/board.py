@@ -298,9 +298,10 @@ BATCHES_HEADING = re.compile(r"^##\s+batches\s*$", re.IGNORECASE)
 LEVEL2_HEADING = re.compile(r"^##(?!#)\s*")
 LEVEL3_HEADING = re.compile(r"^###\s+(.*\S)\s*$")
 # Tolerates `- **Issues:** …`, `- **Issues**: …` and bare `- Issues: …`; the
-# colon may sit inside or outside the bold markers.
+# colon may sit inside or outside the bold markers. A one-member batch may say
+# `Issue:`.
 FIELD_LINE = re.compile(
-    r"^\s*[-*]\s*\*{0,2}\s*(issues|gate|blocked by|why)\s*(?::\s*\*{0,2}|\*{0,2}\s*:)\s*(.*)$",
+    r"^\s*[-*]\s*\*{0,2}\s*(issues?|gate|blocked by|why)\s*(?::\s*\*{0,2}|\*{0,2}\s*:)\s*(.*)$",
     re.IGNORECASE,
 )
 # A new bullet or a heading. Either ends the bullet above it. `#123` at the start of
@@ -383,7 +384,7 @@ def _parse_batch(heading: str, lines: list[str]) -> Batch:
     batch_id, title = _split_heading(heading)
     batch = Batch(id=batch_id, title=title)
     for label, value in _field_blocks(lines):
-        if label == "issues":
+        if label in ("issue", "issues"):
             batch.issue_numbers = [int(n) for n in ISSUE_REF.findall(value)]
         elif label == "gate":
             batch.gate, batch.gate_note = parse_gate(value)

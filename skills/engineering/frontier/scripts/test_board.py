@@ -57,5 +57,18 @@ class WrappedBulletTest(unittest.TestCase):
         self.assertEqual(batch.why, "#1 goes first, then #2 and #3.")
 
 
+class IssueLabelTest(unittest.TestCase):
+    def test_singular_issue_label_lists_the_member(self) -> None:
+        [batch] = parse(
+            "## Batches\n"
+            "\n"
+            "### schedule — The Schedule\n"
+            "\n"
+            "- **Issue:** #444\n"
+            "- **Gate:** `just test`\n"
+        )
+        self.assertEqual(batch.issue_numbers, [444])
+
+
 if __name__ == "__main__":
     unittest.main()
