@@ -26,6 +26,9 @@ Usage
 -----
     python3 board.py [--repo OWNER/NAME] [--work-order PATH] [--port 7373] [--no-open]
 
+It serves until ctrl-c and never exits on its own, so start it in the background.
+One load of the data takes a few seconds.
+
 `--repo` is optional; when omitted `gh` infers the repository from the current
 directory's git remote.  `--work-order` defaults to `docs/agents/work-order.md`
 relative to the current directory; a missing file is not an error — the board
@@ -300,6 +303,9 @@ FIELD_LINE = re.compile(
     r"^\s*[-*]\s*\*{0,2}\s*(issues|gate|blocked by|why)\s*(?::\s*\*{0,2}|\*{0,2}\s*:)\s*(.*)$",
     re.IGNORECASE,
 )
+# A new bullet or a heading. Either ends the bullet above it. `#123` at the start of
+# a wrapped line is an issue reference, not a heading, so it stays a continuation.
+BLOCK_START = re.compile(r"^\s*[-*]\s|^ {0,3}#{1,6}(?:\s|$)")
 ISSUE_REF = re.compile(r"#(\d+)")
 BACKTICK_SPAN = re.compile(r"`([^`]+)`")
 
@@ -328,17 +334,28 @@ def _split_heading(heading: str) -> tuple[str, str]:
 
 
 def _field_blocks(lines: list[str]) -> list[tuple[str, str]]:
-    """Collect (label, value) pairs, folding wrapped continuation lines into the value."""
-    blocks: list[tuple[str, list[str]]] = []
+    """Collect (label, value) pairs, folding each wrapped line into the bullet it continues.
+
+    A bullet that is not a field (a note, a `PR:` line) still opens a block of its
+    own, so its wrapped lines are dropped with it. Folding them into the field
+    above instead would turn any `#123` they mention into a batch member.
+    """
+    blocks: list[tuple[str | None, list[str]]] = []
     for line in lines:
+        if not line.strip():
+            continue
         match = FIELD_LINE.match(line)
         if match:
             blocks.append((match.group(1).lower(), [match.group(2).strip()]))
-        elif blocks and line.strip() and not line.lstrip().startswith(("-", "*", "#")):
+        elif BLOCK_START.match(line):
+            blocks.append((None, []))
+        elif blocks:
             blocks[-1][1].append(line.strip())
-        elif not line.strip():
-            continue
-    return [(label, " ".join(part for part in parts if part).strip()) for label, parts in blocks]
+    return [
+        (label, " ".join(part for part in parts if part).strip())
+        for label, parts in blocks
+        if label
+    ]
 
 
 def parse_gate(value: str) -> tuple[str | None, str | None]:
@@ -1124,7 +1141,8 @@ setInterval(poll, 5000);
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="board.py",
-        description="Read-only local board of GitHub issues ordered by dependency.",
+        description="Read-only local board of GitHub issues ordered by dependency. "
+        "Serves until ctrl-c; it never exits on its own.",
     )
     parser.add_argument("--repo", help="OWNER/NAME; defaults to the git remote of the cwd")
     parser.add_argument(

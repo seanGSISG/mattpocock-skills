@@ -35,11 +35,12 @@ copy it here.
 | `Issues` | yes | Members, **in the order they should be worked**. The order is meaningful — see BATCHING.md. |
 | `Gate` | no | The command that verifies the batch. Backticks are stripped. Omit only when there genuinely is none, and prefer naming the test the batch will add. |
 | `Blocked by` | no | Batch-level blocking edges, in addition to any its members carry on the tracker. Use for a gate that blocks the batch as a whole. |
-| `Why` | no | Rationale. Wraps onto following lines until the next `- **` or heading. |
+| `Why` | no | Rationale. |
 
 - The batch **id** is the text before the ` — ` in the heading; the **title** is the rest. Ids should be short slugs (`graph`, `bot`, `ci`) — they appear on the board and in commit messages.
 - Field labels are case-insensitive, and the `**` bolding is optional.
-- Issue references are `#<number>` anywhere on the line.
+- A field wraps onto following lines until the next bullet or heading. Any other bullet (`- **PR:** …`, a note) ends the field above it and is ignored, wrapped lines included. A wrapped line may start with `#<number>`.
+- Issue references are `#<number>` anywhere in the field, wrapped lines included. Every one in `Issues` becomes a member, so mention other Issues in `Why`.
 - An Issue may belong to **at most one batch**. Listing it twice is a conflict; the board keeps the first and warns.
 - Issues absent from every batch are fine. They are single-Issue nodes and appear on the board on their own.
 - Anything outside `## Batches` is ignored by the parser, so notes and context can live in the same file.
