@@ -16,9 +16,10 @@ independently, because the plan says they ship together.
 Read-only guarantee
 -------------------
 **This program never mutates GitHub.**  Every `gh` invocation in this file is a
-read: `gh repo view`, `gh issue list`, and `gh api` GETs.  There is no code path
-that calls `gh issue edit`, `gh issue close`, `gh pr ...`, or `gh api` with
-`--method POST/PATCH/PUT/DELETE`.  The HTTP server exposes only `GET` handlers
+read: `gh --version`, `gh auth status`, and `gh api graphql` with the one
+constant query in `ISSUES_QUERY`.  There is no code path that sends a GraphQL
+mutation, calls `gh issue edit`, `gh issue close`, `gh pr ...`, or calls
+`gh api` with `--method`.  The HTTP server exposes only `GET` handlers
 and binds to `127.0.0.1` exclusively — never `0.0.0.0`.  Treat any change that
 weakens either property as a bug.
 
@@ -45,7 +46,6 @@ import subprocess
 import sys
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -53,8 +53,8 @@ from urllib.parse import urlparse
 
 GH_TIMEOUT = 45
 CACHE_TTL_SECONDS = 10.0
-MAX_WORKERS = 8
 ISSUE_LIMIT = 300
+PAGE_SIZE = 100  # GraphQL's maximum `first`
 PRIORITY_ORDER = {"P1": 1, "P2": 2, "P3": 3}
 
 
@@ -158,137 +158,149 @@ def preflight() -> None:
         raise GhError(f"gh is not authenticated ({err}).\nRun `gh auth login` and try again.")
 
 
-def resolve_repo(repo: str | None) -> tuple[str | None, str]:
-    """Resolve OWNER/NAME once, honouring --repo. Returns (name_with_owner, error)."""
-    args = ["repo", "view"]
-    if repo:
-        args.append(repo)
-    args += ["--json", "nameWithOwner", "--jq", ".nameWithOwner"]
-    ok, out, err = run_gh(args)
-    if not ok:
-        return None, err
-    name = out.strip()
-    return (name or None), ("" if name else "could not determine the repository")
-
-
-def repo_flag(repo: str | None) -> list[str]:
-    """`--repo OWNER/NAME`, or nothing at all so gh infers from the git remote."""
-    return ["--repo", repo] if repo else []
-
-
 # --------------------------------------------------------------------------- gh: issues
 
-
-def _names(items: object, key: str) -> list[str]:
-    """Pull `key` out of gh's list-of-objects fields, tolerating anything odd."""
-    if not isinstance(items, list):
-        return []
-    out: list[str] = []
-    for item in items:
-        if isinstance(item, dict) and isinstance(item.get(key), str):
-            out.append(item[key])
-    return out
-
-
-def fetch_issues(repo: str | None) -> tuple[list[Issue], list[str]]:
-    """One `gh issue list` call for every issue, open and closed."""
-    args = [
-        "issue", "list",
-        "--state", "all",
-        "--limit", str(ISSUE_LIMIT),
-        "--json", "number,title,labels,state,assignees,url",
-        *repo_flag(repo),
-    ]
-    raw, err = run_gh_json(args)
-    if err:
-        return [], [f"could not list issues — {err}"]
-    if not isinstance(raw, list):
-        return [], ["could not list issues — unexpected response shape"]
-    issues = [
-        Issue(
-            number=int(row.get("number", 0)),
-            title=str(row.get("title", "")),
-            state=str(row.get("state", "")).lower() or "open",
-            url=str(row.get("url", "")),
-            labels=_names(row.get("labels"), "name"),
-            assignees=_names(row.get("assignees"), "login"),
-        )
-        for row in raw
-        if isinstance(row, dict) and row.get("number")
-    ]
-    return issues, []
+# `{blocked_by}` is BLOCKED_BY_FIELD, or nothing when the server has no such field.
+ISSUES_QUERY = """
+query($owner: String!, $name: String!, $first: Int!, $after: String) {
+  repository(owner: $owner, name: $name) {
+    nameWithOwner
+    issues(first: $first, after: $after, orderBy: {field: CREATED_AT, direction: DESC}) {
+      pageInfo { hasNextPage endCursor }
+      nodes {
+        number title state url
+        labels(first: 100) { nodes { name } }
+        assignees(first: 100) { nodes { login } }
+        {blocked_by}
+      }
+    }
+  }
+}
+"""
+BLOCKED_BY_FIELD = (
+    "blockedBy(first: 100, orderBy: {field: DEPENDENCY_ADDED_AT, direction: ASC})"
+    " { nodes { number state title } }"
+)
 
 
-def fetch_blocked_by(name_with_owner: str, number: int) -> tuple[list[dict], list[str]]:
-    """Read one issue's blockers. Degrades to 'no blockers' on any failure.
+def _nodes(connection: object) -> list[dict]:
+    """The dict entries of a GraphQL connection's `nodes`, tolerating anything odd."""
+    nodes = connection.get("nodes") if isinstance(connection, dict) else None
+    return [node for node in nodes if isinstance(node, dict)] if isinstance(nodes, list) else []
 
-    `/dependencies/blocked_by` is the ONLY source of truth here. Do not
-    "optimize" this by gating the call on `.issue_dependencies_summary` —
-    that field is eventually consistent and lags writes by roughly 20
-    seconds. Measured against a real edge written to this repo:
 
-        t+0s   POST .../dependencies/blocked_by  -> 204
-        t+0s   .issue_dependencies_summary       -> {"blocked_by": 0}  WRONG
-        t+0s   .../dependencies/blocked_by       -> [{"number": 180}]  correct
-        t+12s  .issue_dependencies_summary       -> {"blocked_by": 0}  still wrong
-        t+~20s .issue_dependencies_summary       -> {"blocked_by": 1}  caught up
+def _names(items: list[dict], key: str) -> list[str]:
+    """Pull the string `key` out of each node."""
+    return [item[key] for item in items if isinstance(item.get(key), str)]
 
-    The lag window is exactly when someone opens the board after wiring
-    edges, and trusting the summary renders a blocked node as takeable with
-    no visible sign anything is wrong. The list endpoint is the same one
-    call per open issue, so reading it directly costs nothing extra.
-    """
-    listing, err = run_gh_json(
-        [
-            "api",
-            f"repos/{name_with_owner}/issues/{number}/dependencies/blocked_by",
-            "--jq", "[.[] | {number, state, title}]",
+
+def _repo_args(repo: str | None) -> list[str]:
+    """The query's owner and name: from `--repo [HOST/]OWNER/NAME`, else gh's
+    `{owner}`/`{repo}` placeholders, which it fills from the cwd's git remote."""
+    if not repo:
+        return ["-F", "owner={owner}", "-F", "name={repo}"]
+    *host, owner, name = repo.split("/")
+    return [*(["--hostname", host[0]] if host else []), "-f", f"owner={owner}", "-f", f"name={name}"]
+
+
+def _query_issues(repo: str | None, with_blockers: bool) -> tuple[list[dict], str]:
+    """Page through the newest ISSUE_LIMIT issues. Returns (repository objects, error)."""
+    query = ISSUES_QUERY.replace("{blocked_by}", BLOCKED_BY_FIELD if with_blockers else "")
+    pages: list[dict] = []
+    cursor: str | None = None
+    fetched = 0
+    while fetched < ISSUE_LIMIT:
+        args = [
+            "api", "graphql",
+            "-f", f"query={query}",
+            *_repo_args(repo),
+            "-F", f"first={min(PAGE_SIZE, ISSUE_LIMIT - fetched)}",
+            *(["-f", f"after={cursor}"] if cursor else []),
         ]
-    )
-    if err:
-        # Older GitHub Enterprise has no such endpoint (404). Degrade to
-        # "no blockers" rather than killing the board, but say so.
-        return [], [f"#{number}: blockers unavailable — {err}"]
-    if not isinstance(listing, list):
-        return [], []
-    return [row for row in listing if isinstance(row, dict) and row.get("number")], []
+        raw, err = run_gh_json(args)
+        if err:
+            return [], err
+        data = raw.get("data") if isinstance(raw, dict) else None
+        repository = data.get("repository") if isinstance(data, dict) else None
+        issues = repository.get("issues") if isinstance(repository, dict) else None
+        if not isinstance(issues, dict):
+            return [], "unexpected response shape"
+        pages.append(repository)
+        fetched += len(_nodes(issues))
+        page_info = issues.get("pageInfo") or {}
+        cursor = page_info.get("endCursor")
+        if not page_info.get("hasNextPage") or not cursor:
+            break
+    return pages, ""
 
 
-def fetch_all_blockers(
-    name_with_owner: str | None, issues: list[Issue]
-) -> tuple[dict[int, list[dict]], list[str]]:
-    """Fan out the per-issue dependency reads across a small thread pool."""
-    if not name_with_owner:
-        return {}, ["dependency edges skipped — repository could not be resolved"]
-    open_numbers = [i.number for i in issues if i.state == "open"]
-    if not open_numbers:
-        return {}, []
+def fetch_tracker(
+    repo: str | None,
+) -> tuple[str | None, list[Issue], dict[int, list[dict]], list[str]]:
+    """Read the repo's name, its issues, and each issue's blockers in one paged GraphQL query.
 
-    blockers: dict[int, list[dict]] = {}
+    Returns (name_with_owner, issues, blockers by issue number, warnings).
+
+    The edges come from the `blockedBy` connection, never from
+    `issueDependenciesSummary`. The summary is eventually consistent: measured
+    on 2026-08-12, it still said 0 blockers 12 s after a write and caught up
+    at about 20 s. That lag is exactly when someone opens the board after
+    wiring edges, and trusting the summary renders a blocked node as takeable
+    with no visible sign anything is wrong. The connection is correct at once:
+    measured on 2026-11-04 with a test edge between two closed issues, a read
+    0.6 s after the write showed the edge while the summary still said 0, and
+    a read 0.5 s after the removal no longer showed it.
+
+    This query replaced a REST `dependencies/blocked_by` call per open issue.
+    With 22 open issues a load took 5 s in 24 calls and now takes 3.5 s in 3.
+    At the 10 s cache the REST calls came to about 7,900 requests an hour,
+    over the 5,000 limit, so a board left open lost its edges after about
+    40 minutes.
+    """
+    pages, err = _query_issues(repo, with_blockers=True)
     warnings: list[str] = []
-    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
-        results = pool.map(lambda n: (n, fetch_blocked_by(name_with_owner, n)), open_numbers)
-        for number, (rows, warns) in results:
+    if err:
+        # GitHub Enterprise without issue dependencies has no `blockedBy`
+        # field, which fails the whole query. Show the issues without edges
+        # rather than nothing, and say so loudly.
+        pages, retry_err = _query_issues(repo, with_blockers=False)
+        if retry_err:
+            return None, [], {}, [f"could not list issues — {retry_err}"]
+        warnings.append(
+            "blockers could not be read — dependency edges are NOT being shown; "
+            f"this board cannot tell you what is blocked ({err})"
+        )
+
+    issues: list[Issue] = []
+    blockers: dict[int, list[dict]] = {}
+    for repository in pages:
+        for row in _nodes(repository.get("issues")):
+            number = row.get("number")
+            if not isinstance(number, int) or not number:
+                continue
+            issues.append(
+                Issue(
+                    number=number,
+                    title=str(row.get("title", "")),
+                    state=str(row.get("state", "")).lower() or "open",
+                    url=str(row.get("url", "")),
+                    labels=_names(_nodes(row.get("labels")), "name"),
+                    assignees=_names(_nodes(row.get("assignees")), "login"),
+                )
+            )
+            rows = [
+                {
+                    "number": blocker["number"],
+                    "state": str(blocker.get("state", "open")).lower(),
+                    "title": str(blocker.get("title", "")),
+                }
+                for blocker in _nodes(row.get("blockedBy"))
+                if blocker.get("number")
+            ]
             if rows:
                 blockers[number] = rows
-            warnings.extend(warns)
-    return blockers, collapse_warnings(warnings)
-
-
-def collapse_warnings(warnings: list[str], limit: int = 3) -> list[str]:
-    """A repo without the dependencies endpoint fails on every issue at once.
-
-    Listing all of them buries any other warning, so past `limit` we say it
-    once — loudly enough that nobody mistakes it for "no dependencies".
-    """
-    if len(warnings) <= limit:
-        return warnings
-    return [
-        f"blockers could not be read for {len(warnings)} issues — dependency edges "
-        "are NOT being shown; this board cannot tell you what is blocked",
-        *warnings[:limit],
-        f"… and {len(warnings) - limit} more",
-    ]
+    name = pages[0].get("nameWithOwner") if pages else None
+    return (name if isinstance(name, str) else None), issues, blockers, warnings
 
 
 # --------------------------------------------------------------------------- work order
@@ -679,19 +691,10 @@ def layer_open_nodes(
 
 def assemble(repo_arg: str | None, work_order: Path) -> dict:
     """Gather everything and shape it into the /api/board payload."""
-    warnings: list[str] = []
-    name_with_owner, err = resolve_repo(repo_arg)
-    if err:
-        warnings.append(f"repository lookup failed — {err}")
-
-    issues, issue_warnings = fetch_issues(repo_arg)
-    warnings.extend(issue_warnings)
+    name_with_owner, issues, blockers, warnings = fetch_tracker(repo_arg)
 
     batches, found, order_warnings = parse_work_order(work_order)
     warnings.extend(order_warnings)
-
-    blockers, blocker_warnings = fetch_all_blockers(name_with_owner, issues)
-    warnings.extend(blocker_warnings)
 
     nodes, issue_to_node, node_warnings = build_nodes(issues, batches)
     warnings.extend(node_warnings)
